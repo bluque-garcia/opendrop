@@ -37,6 +37,14 @@ from zeroconf import DNSOutgoing, IPVersion, ServiceInfo, Zeroconf, const
 
 from .util import AirDropUtil
 
+# Senders are untrusted: refuse "../" and absolute paths and writes through
+# symlinks, so nothing lands outside the current directory
+SAFE_EXTRACT_FLAGS = (
+    libarchive.extract.EXTRACT_SECURE_NODOTDOT
+    | libarchive.extract.EXTRACT_SECURE_NOABSOLUTEPATHS
+    | libarchive.extract.EXTRACT_SECURE_SYMLINKS
+)
+
 logger = logging.getLogger(__name__)
 
 # AirDrop carries a shared link in the /Ask body's "Items" array rather than as
@@ -554,7 +562,7 @@ class AirDropServerHandler(BaseHTTPRequestHandler):
                 self.total += length
                 return length
 
-        def extract_stream(stream, flags=0):
+        def extract_stream(stream, flags=SAFE_EXTRACT_FLAGS):
             """
             Extracts an archive from memory into the current directory.
             """
@@ -814,11 +822,42 @@ class AirDropServerHandler(BaseHTTPRequestHandler):
                         pass
             return good, bad
 
+        def unsafe_members(cpio):
+            """Member names that would land outside the receive directory.
+
+            The sender is an unauthenticated peer and `receive` accepts every
+            transfer, so a "../" or absolute name could write anywhere the
+            user can. The extraction flags refuse those entries too, but
+            libarchive only raises after writing the members before them, and
+            the handlers below treat a raise as a merely truncated archive.
+            Checking the names first turns that into an outright refusal.
+            """
+            bad = []
+            for name, _, _, _ in odc_members(cpio):
+                parts = name.replace("\\", "/").split("/")
+                if name.startswith(("/", "\\")) or ".." in parts or ":" in parts[0]:
+                    bad.append(name)
+            return bad
+
+        def reject(names):
+            logger.warning(f"Rejected archive with unsafe paths: {', '.join(names)}")
+            try:
+                os.remove(raw_path)
+            except OSError:
+                pass
+            self.send_response(400)  # Bad Request
+            self.send_header("Content-Length", 0)
+            self.send_header("Connection", "close")
+            self.end_headers()
+
         try:
             if raw_path.endswith(".dvzip"):
                 cpio_bytes = dvzip_to_cpio(raw_path)
+                unsafe = unsafe_members(cpio_bytes)
+                if unsafe:
+                    return reject(unsafe)
                 try:
-                    libarchive.extract_memory(cpio_bytes)
+                    libarchive.extract_memory(cpio_bytes, SAFE_EXTRACT_FLAGS)
                 except Exception as e:  # noqa: BLE001
                     # A truncated archive raises AFTER writing the complete
                     # members, so nothing already on disk is lost.
@@ -843,6 +882,21 @@ class AirDropServerHandler(BaseHTTPRequestHandler):
                 # that reach the outer handler left those files unclassified -
                 # so incomplete ones were never renamed .partial. Verify in
                 # every case.
+                #
+                # The names are vetted BEFORE extracting, on the same bytes
+                # the verification walks (decompressed when gzip'd).
+                with open(raw_path, "rb") as fh:
+                    if fh.read(2) == b"\x1f\x8b":
+                        fh.seek(0)
+                        unsafe = unsafe_members(
+                            zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(fh.read()))
+                    elif os.fstat(fh.fileno()).st_size:
+                        with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as cpio_bytes:
+                            unsafe = unsafe_members(cpio_bytes)
+                    else:
+                        unsafe = []
+                if unsafe:
+                    return reject(unsafe)
                 try:
                     with open(raw_path, "rb") as raw:
                         extract_stream(raw)
