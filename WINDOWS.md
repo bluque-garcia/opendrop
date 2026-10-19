@@ -88,6 +88,21 @@ un adaptador que no está en la lista), `-Distro`.
 Logs de cada ejecución en WSL: `/var/log/airdrop/<fecha>-<modo>/` (owl.log,
 receive.log, capturas pcap).
 
+## Detalles de WSL que resuelve el lanzador
+
+- **Firmware**: el kernel de WSL carga firmware desde el namespace raíz de la
+  VM, no desde Ubuntu, así que `/lib/firmware` de la distro no le sirve
+  (`Direct firmware load ... failed with error -2`). `airdrop-wsl.sh prepare`
+  copia los blobs a `/mnt/wsl/airdrop-firmware` (tmpfs compartido con ese
+  namespace) y apunta `firmware_class.path` ahí. Tiene que ocurrir **antes**
+  de conectar el adaptador, y se pierde al reiniciar WSL; el lanzador lo hace
+  en cada ejecución.
+- **Dominio regulatorio**: por el mismo motivo `regulatory.db` no se cargaba
+  y quedaba el dominio mundial, que prohíbe emitir en todo 5 GHz (canales
+  AWDL 44 y 149). Con el firmware preparado se aplica `ES` (o `-Country`).
+- **Firmware comprimido**: Ubuntu lo trae en `.zst` y el kernel de WSL solo
+  descomprime XZ; `build-wifi-modules.sh` deja copias sin comprimir.
+
 ## Limitaciones conocidas
 
 - **Velocidad**: unos 40-70 kB/s; una foto de 3-4 MB tarda 1-2 minutos.

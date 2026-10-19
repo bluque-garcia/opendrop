@@ -1,5 +1,9 @@
 # OpenDrop: an Open Source AirDrop Implementation
 
+> **Fork:** this branch runs on Windows 11 through WSL2 and a USB Wi-Fi adapter,
+> and carries the iOS 26 fixes from [airdrop-mt7921](https://github.com/jedbillyb/airdrop-mt7921)
+> plus a path traversal fix. See [WINDOWS.md](WINDOWS.md) (Spanish).
+
 [![Release](https://img.shields.io/pypi/v/opendrop?color=%23EC6500&label=release)](https://pypi.org/project/opendrop/)
 [![Language grade](https://img.shields.io/lgtm/grade/python/github/seemoo-lab/opendrop?label=code%20quality)](https://lgtm.com/projects/g/seemoo-lab/opendrop/context:python)
 

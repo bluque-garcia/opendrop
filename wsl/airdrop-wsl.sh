@@ -80,11 +80,43 @@ find_iface() {
     return 1
 }
 
+# The kernel loads firmware from the WSL VM's root mount namespace, not from
+# this distro, so Ubuntu's /lib/firmware is invisible to it ("Direct firmware
+# load ... failed with error -2"). /mnt/wsl is a tmpfs shared with that
+# namespace: stage the blobs there and point the loader at it. This has to
+# happen before the adapter is attached - the driver asks for its firmware
+# at probe time - and again after every WSL restart, since both the tmpfs
+# and the module parameter are lost then.
+FW_STAGE=/mnt/wsl/airdrop-firmware
+prepare() {
+    mkdir -p "$FW_STAGE"
+    (cd /lib/firmware && cp --parents -u regulatory.db regulatory.db.p7s htc_9271.fw \
+        rt2870.bin ath9k_htc/*.fw mediatek/mt7610u.bin mediatek/mt7662u*.bin \
+        mediatek/WIFI_*MT7961*.bin "$FW_STAGE"/ 2>/dev/null)
+    echo -n "$FW_STAGE" > /sys/module/firmware_class/parameters/path
+    modprobe -q cfg80211; modprobe -q mac80211; modprobe -q tun
+    for m in "${DRIVERS[@]}"; do modprobe -q "$m" 2>/dev/null; done
+    # cfg80211 may have come up before the path was set, on the world domain
+    # that forbids transmitting anywhere on 5 GHz. Setting the country makes
+    # it read regulatory.db again.
+    iw reg set "$REG"
+    for _ in $(seq 10); do iw reg get | grep -q "country $REG" && return 0; sleep 0.3; done
+    echo "WARNING: regulatory domain $REG not applied; 5 GHz AWDL channels stay passive" >&2
+}
+
 step "layer 0: USB Wi-Fi adapter"
-modprobe -q cfg80211; modprobe -q mac80211; modprobe -q tun
-for m in "${DRIVERS[@]}"; do modprobe -q "$m" 2>/dev/null; done
+prepare
+[ "$MODE" = prepare ] && { trap - EXIT; say "  firmware staged in $FW_STAGE, drivers loaded"; exit 0; }
 FOUND=""
-for _ in $(seq 20); do FOUND="$(find_iface)" && break; sleep 1; done
+for i in $(seq 20); do
+    FOUND="$(find_iface)" && break
+    # Attached before prepare ran (e.g. by hand): the probe failed for lack
+    # of firmware. Reloading the drivers re-probes the device.
+    if [ "$i" = 5 ]; then
+        for m in "${DRIVERS[@]}"; do modprobe -r -q "$m" 2>/dev/null; modprobe -q "$m" 2>/dev/null; done
+    fi
+    sleep 1
+done
 if [ -n "${IFACE:-}" ]; then
     DRV="$(basename "$(readlink -f "/sys/class/net/$IFACE/device/driver")" 2>/dev/null)"
 elif [ -n "$FOUND" ]; then

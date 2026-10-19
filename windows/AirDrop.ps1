@@ -28,6 +28,7 @@ param(
     [string]$Receiver,
     [ValidateSet('', '6', '44', '149')]
     [string]$Channel = '',
+    [string]$Country = 'ES',
     [string]$Distro = 'Ubuntu-24.04'
 )
 $ErrorActionPreference = 'Stop'
@@ -100,6 +101,12 @@ function Find-Adapter([string]$Usbipd) {
 function Connect-Adapter {
     $usbipd = Get-Usbipd
     $dev = Find-Adapter $usbipd
+    # Stage firmware and load the drivers BEFORE attaching: the driver asks
+    # for its firmware the moment the device appears in WSL. This also
+    # starts the WSL VM, which attach needs.
+    if ((Invoke-Wsl @('env', "REG=$Country", 'bash', $script, 'prepare')) -ne 0) {
+        throw "No se pudo preparar WSL (¿falta 'AirDrop.cmd setup'?)"
+    }
     if ($dev.ClientIPAddress) { return $dev }      # already attached to WSL
     if (-not $dev.PersistedGuid) {
         # Sharing a device is the one step that needs admin, and it persists.
@@ -107,8 +114,6 @@ function Connect-Adapter {
         $p = Start-Process -FilePath $usbipd -ArgumentList 'bind', '--busid', $dev.BusId -Verb RunAs -Wait -PassThru
         if ($p.ExitCode -ne 0) { throw "usbipd bind falló ($($p.ExitCode))" }
     }
-    # The WSL VM must be up for attach to find it.
-    $null = Invoke-Wsl @('true')
     & $usbipd attach --wsl --busid $dev.BusId
     if ($LASTEXITCODE -ne 0) { throw "usbipd attach falló" }
     return $dev
@@ -132,7 +137,8 @@ $null = Connect-Adapter
 
 $envArgs = @(
     "AIRDROP_NAME=$Name",
-    "RECV_DIR=$(ConvertTo-WslPath $ReceiveDir)"
+    "RECV_DIR=$(ConvertTo-WslPath $ReceiveDir)",
+    "REG=$Country"
 )
 if ($Channel) { $envArgs += "CHAN=$Channel" }
 if ($Receiver) { $envArgs += "RECEIVER=$Receiver" }
